@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PES-Style Football Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; background: #2e8b57; }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div id="score">Home 0 - 0 Away</div>
+    <canvas id="gameCanvas"></canvas>
+    
+    <script>
+        // Game setup
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Game state
+        const game = {
+            homeScore: 0,
+            awayScore: 0,
+            isPlaying: true,
+            lastTouch: null
+        };
+
+        // Field dimensions
+        const field = {
+            width: canvas.width,
+            height: canvas.height,
+            center: { x: canvas.width / 2, y: canvas.height / 2 },
+            draw() {
+                // Grass
+                ctx.fillStyle = '#2e8b57';
+                ctx.fillRect(0, 0, this.width, this.height);
+                
+                // Lines
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                
+                // Boundary
+                ctx.strokeRect(20, 20, this.width - 40, this.height - 40);
+                
+                // Center line
+                ctx.beginPath();
+                ctx.moveTo(this.center.x, 20);
+                ctx.lineTo(this.center.x, this.height - 20);
+                ctx.stroke();
+                
+                // Center circle
+                ctx.beginPath();
+                ctx.arc(this.center.x, this.center.y, 70, 0, Math.PI * 2);
+                ctx.stroke();
+                
+                // Penalty areas
+                ctx.strokeRect(20, this.center.y - 150, 100, 300);
+                ctx.strokeRect(this.width - 120, this.center.y - 150, 100, 300);
+                
+                // Goals
+                ctx.fillStyle = 'white';
+                ctx.fillRect(10, this.center.y - 50, 10, 100);
+                ctx.fillRect(this.width - 20, this.center.y - 50, 10, 100);
+            }
+        };
+
+        // Ball
+        const ball = {
+            x: field.center.x,
+            y: field.center.y,
+            radius: 10,
+            dx: 0,
+            dy: 0,
+            friction: 0.96,
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'white';
+                ctx.fill();
+                ctx.closePath();
+            },
+            update() {
+                this.x += this.dx;
+                this.y += this.dy;
+                
+                // Apply friction
+                this.dx *= this.friction;
+                this.dy *= this.friction;
+                
+                // Stop when very slow
+                if (Math.abs(this.dx) < 0.1) this.dx = 0;
+                if (Math.abs(this.dy) < 0.1) this.dy = 0;
+                
+                // Boundary collision
+                if (this.x < this.radius + 30 || this.x > field.width - this.radius - 30) {
+                    this.dx = -this.dx * 0.7;
+                    if (this.x < this.radius + 30) this.x = this.radius + 30;
+                    if (this.x > field.width - this.radius - 30) this.x = field.width - this.radius - 30;
+                    
+                    // Goal detection
+                    if (this.x < 30 && Math.abs(this.y - field.center.y) < 50) {
+                        game.awayScore++;
+                        updateScore();
+                        resetAfterGoal();
+                    }
+                    if (this.x > field.width - 30 && Math.abs(this.y - field.center.y) < 50) {
+                        game.homeScore++;
+                        updateScore();
+                        resetAfterGoal();
+                    }
+                }
+                
+                if (this.y < this.radius + 20 || this.y > field.height - this.radius - 20) {
+                    this.dy = -this.dy * 0.7;
+                    if (this.y < this.radius + 20) this.y = this.radius + 20;
+                    if (this.y > field.height - this.radius - 20) this.y = field.height - this.radius - 20;
+                }
+            }
+        };
+
+        // Player class
+        class Player {
+            constructor(x, y, team, isUserControlled = false) {
+                this.x = x;
+                this.y = y;
+                this.radius = 15;
+                this.speed = 3;
+                this.team = team; // 'home' or 'away'
+                this.isUserControlled = isUserControlled;
+                this.target = { x, y };
+                this.hasBall = false;
+            }
+            
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.team === 'home' ? 'blue' : 'red';
+                ctx.fill();
+                ctx.closePath();
+                
+                // Draw direction indicator for user-controlled player
+                if (this.isUserControlled) {
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y);
+                    ctx.lineTo(this.x + Math.cos(this.angle) * 25, this.y + Math.sin(this.angle) * 25);
+                    ctx.strokeStyle = 'yellow';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+            }
+            
+            update() {
+                if (this.isUserControlled) return;
+                
+                // AI movement
+                if (game.lastTouch === this.team || Math.random() < 0.01) {
+                    // Move toward ball or random position
+                    if (Math.random() < 0.7) {
+                        this.target = { x: ball.x, y: ball.y };
+                    } else {
+                        this.target = { 
+                            x: this.team === 'home' 
+                                ? field.width * 0.25 + Math.random() * field.width * 0.3
+                                : field.width * 0.75 - Math.random() * field.width * 0.3,
+                            y: field.height * 0.25 + Math.random() * field.height * 0.5
+                        };
+                    }
+                }
+                
+                // Move toward target
+                const dx = this.target.x - this.x;
+                const dy = this.target.y - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance > 5) {
+                    this.x += (dx / distance) * this.speed;
+                    this.y += (dy / distance) * this.speed;
+                }
+                
+                // Keep within bounds
+                this.x = Math.max(30 + this.radius, Math.min(field.width - 30 - this.radius, this.x));
+                this.y = Math.max(20 + this.radius, Math.min(field.height - 20 - this.radius, this.y));
+                
+                // Check for ball collision
+                this.checkBallCollision();
+            }
+            
+            checkBallCollision() {
+                const dx = ball.x - this.x;
+                const dy = ball.y - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < this.radius + ball.radius) {
+                    game.lastTouch = this.team;
+                    
+                    if (this.isUserControlled && keys[' ']) {
+                        // Shoot
+                        const power = 15;
+                        ball.dx = Math.cos(this.angle) * power;
+                        ball.dy = Math.sin(this.angle) * power;
+                    } else {
+                        // Pass or dribble
+                        if (this.isUserControlled && keys['p'] && players.some(p => p.team === this.team && !p.isUserControlled)) {
+                            // Pass to nearest teammate
+                            const teammates = players.filter(p => p.team === this.team && !p.isUserControlled);
+                            const closest = teammates.reduce((prev, curr) => {
+                                const prevDist = Math.sqrt(Math.pow(prev.x - this.x, 2) + Math.pow(prev.y - this.y, 2));
+                                const currDist = Math.sqrt(Math.pow(curr.x - this.x, 2) + Math.pow(curr.y - this.y, 2));
+                                return currDist < prevDist ? curr : prev;
+                            });
+                            
+                            const passPower = 10;
+                            const targetX = closest.x + (closest.x - this.x) * 0.3;
+                            const targetY = closest.y + (closest.y - this.y) * 0.3;
+                            const angle = Math.atan2(targetY - this.y, targetX - this.x);
+                            
+                            ball.dx = Math.cos(angle) * passPower;
+                            ball.dy = Math.sin(angle) * passPower;
+                        } else {
+                            // Dribble
+                            const dribblePower = 5;
+                            const angle = this.isUserControlled 
+                                ? this.angle 
+                                : Math.atan2(ball.y - this.y, ball.x - this.x);
+                            
+                            ball.dx = Math.cos(angle) * dribblePower;
+                            ball.dy = Math.sin(angle) * dribblePower;
+                        }
+                    }
+                    
+                    // Move ball slightly away to prevent sticking
+                    ball.x += (dx / distance) * 5;
+                    ball.y += (dy / distance) * 5;
+                }
+            }
+        }
+
+        // Create players
+        const players = [];
+        
+        // Home team (user-controlled + AI)
+        players.push(new Player(field.width * 0.3, field.center.y, 'home', true));
+        for (let i = 0; i < 4; i++) {
+            players.push(new Player(
+                field.width * 0.2 + Math.random() * field.width * 0.2,
+                field.height * 0.2 + Math.random() * field.height * 0.6,
+                'home'
+            ));
+        }
+        
+        // Away team (AI)
+        for (let i = 0; i < 5; i++) {
+            players.push(new Player(
+                field.width * 0.7 + Math.random() * field.width * 0.2,
+                field.height * 0.2 + Math.random() * field.height * 0.6,
+                'away'
+            ));
+        }
+
+        // User-controlled player
+        const userPlayer = players[0];
+        userPlayer.angle = 0; // Facing right by default
+
+        // Controls
+        const keys = {
+            ArrowUp: false,
+            ArrowDown: false,
+            ArrowLeft: false,
+            ArrowRight: false,
+            ' ': false, // shoot
+            'p': false // pass
+        };
+
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key)) {
+                keys[e.key] = true;
+            }
+            
+            // Change controlled player (for debugging)
+            if (e.key === 'c') {
+                const homePlayers = players.filter(p => p.team === 'home');
+                const currentIndex = homePlayers.indexOf(userPlayer);
+                const nextIndex = (currentIndex + 1) % homePlayers.length;
+                
+                userPlayer.isUserControlled = false;
+                homePlayers[nextIndex].isUserControlled = true;
+                players.forEach(p => {
+                    if (p === homePlayers[nextIndex]) {
+                        userPlayer = p;
+                        p.angle = Math.atan2(ball.y - p.y, ball.x - p.x);
+                    }
+                });
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key)) {
+                keys[e.key] = false;
+            }
+        });
+
+        // Update score display
+        function updateScore() {
+            document.getElementById('score').textContent = `Home ${game.homeScore} - ${game.awayScore} Away`;
+        }
+
+        // Reset after goal
+        function resetAfterGoal() {
+            game.isPlaying = false;
+            
+            // Reset ball
+            ball.x = field.center.x;
+            ball.y = field.center.y;
+            ball.dx = 0;
+            ball.dy = 0;
+            
+            // Reset players
+            players.forEach((player, i) => {
+                if (player.team === 'home') {
+                    player.x = field.width * 0.3 + (i % 3) * 40;
+                    player.y = field.center.y - 60 + Math.floor(i / 3) * 40;
+                } else {
+                    player.x = field.width * 0.7 + (i % 3) * 40;
+                    player.y = field.center.y - 60 + Math.floor((i - 5) / 3) * 40;
+                }
+            });
+            
+            setTimeout(() => {
+                game.isPlaying = true;
+            }, 2000);
+        }
+
+        // Game loop
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            field.draw();
+            ball.draw();
+            ball.update();
+            
+            // Update user-controlled player
+            if (game.isPlaying) {
+                if (keys.ArrowUp) userPlayer.y -= userPlayer.speed;
+                if (keys.ArrowDown) userPlayer.y += userPlayer.speed;
+                if (keys.ArrowLeft) userPlayer.x -= userPlayer.speed;
+                if (keys.ArrowRight) userPlayer.x += userPlayer.speed;
+                
+                // Update angle based on movement or ball position
+                if (keys.ArrowUp || keys.ArrowDown || keys.ArrowLeft || keys.ArrowRight) {
+                    userPlayer.angle = Math.atan2(
+                        (keys.ArrowDown ? 1 : 0) - (keys.ArrowUp ? 1 : 0),
+                        (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0)
+                    );
+                } else {
+                    userPlayer.angle = Math.atan2(ball.y - userPlayer.y, ball.x - userPlayer.x);
+                }
+                
+                // Keep player in bounds
+                userPlayer.x = Math.max(30 + userPlayer.radius, Math.min(field.width - 30 - userPlayer.radius, userPlayer.x));
+                userPlayer.y = Math.max(20 + userPlayer.radius, Math.min(field.height - 20 - userPlayer.radius, userPlayer.y));
+                
+                // Check ball collision for user player
+                userPlayer.checkBallCollision();
+            }
+            
+            // Update and draw other players
+            players.forEach(player => {
+                if (game.isPlaying && !player.isUserControlled) {
+                    player.update();
+                }
+                player.draw();
+            });
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start game
+        gameLoop();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            field.width = canvas.width;
+            field.height = canvas.height;
+            field.center = { x: canvas.width / 2, y: canvas.height / 2 };
+        });
+    </script>
+</body>
+</html>
